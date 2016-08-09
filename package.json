@@ -1,6 +1,6 @@
 {
   "name": "node-flac",
-  "version": "0.0.1",
+  "version": "0.0.1a",
   "description": "Native libFLAC bindings for Node",
   "main": "index.js",
   "scripts": {
@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/distopik/node-flac.git"
+    "url": "https://github.com/distopik/node-flac.git"
   },
   "keywords": ["flac", "lossless", "audio", "native"],
   "author": "http://www.distopik.com",
