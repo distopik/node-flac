@@ -23,54 +23,38 @@ namespace nodeflac {
 		}
 	}
 
-	class FlacEncodeStreamInternal : public Encoder::Stream {
+	class FlacEncodeStream : public Nan::ObjectWrap, public Encoder::Stream {
 	public:
 		typedef ::FLAC__StreamEncoderWriteStatus Status;
-		typedef std::vector<uint8_t>             Buffer;
-		typedef std::list<Buffer>                BufferList;
-		
-		FlacEncodeStreamInternal(bool streaming, unsigned int numChannels, unsigned int depth, unsigned int rate) {
-			set_streamable_subset (streaming);
-			set_sample_rate       (rate);
-			set_bits_per_sample   (depth);
-			set_channels          (numChannels);
+		typedef std::list<MaybeLocal<Object>>         BufferList;
+
+	private:
+		unsigned int numChannels, sampleSize;
+		BufferList   buffers;
+
+		static Persistent<Object> constructor;
+
+	public:
+		FlacEncodeStream(bool _streaming, unsigned int _numChannels, unsigned int _depth, unsigned int _rate)
+			: numChannels(_numChannels), sampleSize(_depth / 8)
+		{
+			set_streamable_subset (_streaming);
+			set_sample_rate       (_rate);
+			set_bits_per_sample   (_depth);
+			set_channels          (_numChannels);
 			
 			init();
 		}
-
-		BufferList& Buffers() {
-			return buffers;
-		}
-
-	protected:
-		Status write_callback (const FLAC__byte buffer[], size_t bytes, unsigned samples, unsigned current_frame) {
-
-			buffers.push_back(
-				std::vector<uint8_t>(
-					(const uint8_t*) buffer, 
-					(const uint8_t*) buffer + bytes));
-
-			return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
-		}
-	private:
-		BufferList buffers;
-	};
-
-	class FlacEncodeStream : public Nan::ObjectWrap {
-	private:
-		unsigned int numChannels, sampleSize;
-		FlacEncodeStreamInternal  flac;
-		static Persistent<Object> constructor;
-	public:
-		FlacEncodeStream(bool streaming, unsigned int _numChannels, unsigned int _depth, unsigned int rate)
-			: numChannels(_numChannels), sampleSize(_depth / 8),
-			  flac(streaming, _numChannels, _depth, rate)
-		{}
 
 		static void Init   (Local<Object> exports);
 
 		static void New    (const FunctionCallbackInfo<Value>& args);
 		static void Process(const FunctionCallbackInfo<Value>& args);
+	protected:
+		Status write_callback (const FLAC__byte buffer[], size_t bytes, unsigned samples, unsigned current_frame) {
+			buffers.push_back(Nan::CopyBuffer((const char*) buffer, bytes));
+			return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
+		}
 	};
 
 	Persistent<Object> FlacEncodeStream::constructor;
@@ -112,7 +96,6 @@ namespace nodeflac {
 		/* get "this" */
 		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
 
-
 		FLAC__int32* pointers[64];
 		Local<Array> array = args[0].As<Array>();
 
@@ -122,24 +105,24 @@ namespace nodeflac {
 			smallestLen = std::min(smallestLen, Buffer::Length(array->Get(i)));
 		}
 		
-		/* non-interleaved, i.e. multi channel */
-		self->flac.process(pointers, smallestLen / self->sampleSize);
-
 		/* submit buffers for processing */
-		FlacEncodeStreamInternal::BufferList& buffers = self->flac.Buffers();
-		Local<Array> rv = Array::New(isolate, buffers.size());
+		self->process(pointers, smallestLen / self->sampleSize);
+
+		/* collect results */
+		Local<Array> rv = Array::New(isolate, self->buffers.size());
 
 		int index = 0;
-		for (FlacEncodeStreamInternal::Buffer& buf : buffers) {
-			rv->Set(index++, Nan::CopyBuffer((const char *) &buf.front(), buf.size()).ToLocalChecked());
+		for (MaybeLocal<Object>& buf : self->buffers) {
+			rv->Set(index++, buf.ToLocalChecked());
 		}
 
+		self->buffers.clear();
 		args.GetReturnValue().Set(rv);
 	}
 
 	static void Initialize(Handle<Object> target) {
         Nan::HandleScope scope;
-
+        
         FlacEncodeStream::Init(target);
     }
 }
