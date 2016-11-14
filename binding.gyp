@@ -11,7 +11,7 @@
             'dependencies': [
             ],
             'libraries': [
-                '-lflac'
+                '-lFLAC++'
             ],
             'conditions':[
                 ['OS=="mac"', {
