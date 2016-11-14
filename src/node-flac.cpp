@@ -132,8 +132,10 @@ namespace nodeflac {
 			set_channels          (_numChannels);
 			set_blocksize         (_streaming ? 128 : 0);
 
+			#if 0
 			printf("FlacEncodeStream: streaming: %s, numChannels: %u, depth: %u, rate: %u\n",
 				_streaming ? "true" : "false", _numChannels, _depth, _rate);
+			#endif
 			
 			init();
 		}
@@ -142,11 +144,12 @@ namespace nodeflac {
 
 		static void New           (const FunctionCallbackInfo<Value>& args);
 		static void Process       (const FunctionCallbackInfo<Value>& args);
+		static void ProcessInterl (const FunctionCallbackInfo<Value>& args);
 		static void Finish        (const FunctionCallbackInfo<Value>& args);
 			   void ReturnBuffers (const FunctionCallbackInfo<Value>& args);
 	protected:
 		Status write_callback (const FLAC__byte buffer[], size_t bytes, unsigned samples, unsigned current_frame) {
-			printf(" ++ %zu bytes\n", bytes);
+			// printf(" ++ %zu bytes\n", bytes);
 			for (size_t i = 0; i < bytes; i++) {
 				buffers.push(buffer[i]);
 			}
@@ -163,8 +166,9 @@ namespace nodeflac {
 		tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
 		// Prototype
-		NODE_SET_PROTOTYPE_METHOD(tpl, "process", Process);
-		NODE_SET_PROTOTYPE_METHOD(tpl, "finish",  Finish);
+		NODE_SET_PROTOTYPE_METHOD(tpl, "process",            Process);
+		NODE_SET_PROTOTYPE_METHOD(tpl, "processInterleaved", ProcessInterl);
+		NODE_SET_PROTOTYPE_METHOD(tpl, "finish",             Finish);
 
 		constructor.Reset(isolate, tpl->GetFunction());
 		exports->Set(String::NewFromUtf8(isolate, "FlacEncodeStream"), tpl->GetFunction());
@@ -196,6 +200,24 @@ namespace nodeflac {
 		self->ReturnBuffers(args);
 	}
 
+	void FlacEncodeStream::ProcessInterl(const FunctionCallbackInfo<Value>& args) {
+		/* process a buffer and return a buffer (sync) */
+		Nan::HandleScope scope;
+
+		/* get "this" */
+		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
+
+		FLAC__int32* source = (FLAC__int32*) Buffer::Data(args[0]);
+		size_t       len    = Buffer::Length(args[0]);
+		
+		/* submit buffers for processing */
+		// printf("... Submit!\n");
+		self->process_interleaved(source, len / (self->sampleSize * self->numChannels));
+		// printf("... After submit!\n");
+
+		self->ReturnBuffers(args);
+	}
+
 	void FlacEncodeStream::Process(const FunctionCallbackInfo<Value>& args) {
 		/* process a buffer and return a buffer (sync) */
 		Nan::HandleScope scope;
@@ -213,9 +235,9 @@ namespace nodeflac {
 		}
 		
 		/* submit buffers for processing */
-		printf("... Submit!\n");
+		// printf("... Submit!\n");
 		self->process(pointers, smallestLen / self->sampleSize);
-		printf("... After submit!\n");
+		// printf("... After submit!\n");
 
 		self->ReturnBuffers(args);
 	}
@@ -225,7 +247,7 @@ namespace nodeflac {
 		Local<Object> buf = Nan::NewBuffer(sz).ToLocalChecked();
 		uint8_t*      dta = (uint8_t*) Buffer::Data(buf);
 
-		printf(" -- %zu bytes\n", sz);
+		// printf(" -- %zu bytes\n", sz);
 
 		while (!buffers.empty()) {
 			*(dta++) = buffers.front();
