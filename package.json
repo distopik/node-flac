@@ -10,11 +10,20 @@
     "type": "git",
     "url": "https://github.com/distopik/node-flac.git"
   },
-  "keywords": ["flac", "lossless", "audio", "native"],
+  "keywords": [
+    "flac",
+    "lossless",
+    "audio",
+    "native"
+  ],
   "author": "http://www.distopik.com",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/distopik/node-flac/issues"
   },
-  "homepage": "https://github.com/distopik/node-flac#readme"
+  "homepage": "https://github.com/distopik/node-flac#readme",
+  "dependencies": {
+    "bindings": "^1.2.1",
+    "nan": "^2.4.0"
+  }
 }
