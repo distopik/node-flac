@@ -5,6 +5,9 @@
 #include <v8.h>
 #include <node.h>
 
+#include <atomic>
+#include <cstddef>
+
 #include <FLAC++/decoder.h>
 #include <FLAC++/encoder.h>
 
@@ -13,12 +16,97 @@ namespace nodeflac {
 	using namespace ::node;
 	using namespace ::FLAC;
 
+	template<typename ET, int S, typename ST=int>
+	class ringbuffer
+	{
+	public:
+		typedef ET value_type;
+		typedef ST size_type;
+	    
+		ringbuffer()
+		{
+			clear();
+		}
+	    
+		~ringbuffer() {}
+	    
+		size_type size()     const { return m_size; }
+		size_type max_size() const { return S; }
+	    
+		bool empty() const	{ return m_size == 0; }
+		bool full()  const	{ return m_size == S; }
+	    
+		value_type& front() { return m_buffer[m_front]; }
+		value_type& back() { return m_buffer[m_back]; }
+	    
+		void clear() {
+			m_size = 0;
+			m_front = 0;
+			m_back  = S - 1;
+		}
+	    
+		void push()	{
+			m_back = (m_back + 1) % S;
+			if( size() == S )
+				m_front = (m_front + 1) % S;
+			else
+				m_size++;
+		}
+	    
+		void push(const value_type& x) {
+			push();
+			back() = x;
+		}
+	    
+		void pop() {
+			if( m_size > 0  ) {
+				m_size--;
+				m_front = (m_front + 1) % S;
+			}
+		}
+	    
+		void back_erase(const size_type n) {
+			if( n >= m_size )
+				clear();
+			else {
+				m_size -= n;
+				m_back = (m_front + m_size - 1) % S;
+			}
+		}
+	    
+		void front_erase(const size_type n) {
+			if( n >= m_size )
+				clear();
+			else {
+				m_size -= n;
+				m_front = (m_front + n) % S;
+			}
+		}
+	    
+	protected:
+	    
+		value_type m_buffer[S];
+	    
+		size_type m_size;
+	    
+		size_type m_front;
+		size_type m_back;
+	};
+
+
+
 	template <typename T>
 	static const T GetOr(Local<Object>& src, const char* key, const T def) /* !! uses current Isolate !! */ {
-		MaybeLocal<Value> value = Nan::Get(src, Nan::New(key).ToLocalChecked());
-		if (value.IsEmpty()) {
+		Local<Value> lookup = Nan::New(key).ToLocalChecked();
+
+		if (!src->Has(lookup)) {
 			return def;
 		} else {
+			MaybeLocal<Value> value = Nan::Get(src, lookup);
+			if (value.IsEmpty()) {
+				return def;
+			}
+
 			return Nan::To<T>(value.ToLocalChecked()).FromJust();
 		}
 	}
@@ -26,7 +114,7 @@ namespace nodeflac {
 	class FlacEncodeStream : public Nan::ObjectWrap, public Encoder::Stream {
 	public:
 		typedef ::FLAC__StreamEncoderWriteStatus Status;
-		typedef std::list<MaybeLocal<Object>>         BufferList;
+		typedef ringbuffer<uint8_t, 16 * 1024>   BufferList;
 
 	private:
 		unsigned int numChannels, sampleSize;
@@ -42,17 +130,26 @@ namespace nodeflac {
 			set_sample_rate       (_rate);
 			set_bits_per_sample   (_depth);
 			set_channels          (_numChannels);
+			set_blocksize         (_streaming ? 128 : 0);
+
+			printf("FlacEncodeStream: streaming: %s, numChannels: %u, depth: %u, rate: %u\n",
+				_streaming ? "true" : "false", _numChannels, _depth, _rate);
 			
 			init();
 		}
 
 		static void Init   (Local<Object> exports);
 
-		static void New    (const FunctionCallbackInfo<Value>& args);
-		static void Process(const FunctionCallbackInfo<Value>& args);
+		static void New           (const FunctionCallbackInfo<Value>& args);
+		static void Process       (const FunctionCallbackInfo<Value>& args);
+		static void Finish        (const FunctionCallbackInfo<Value>& args);
+			   void ReturnBuffers (const FunctionCallbackInfo<Value>& args);
 	protected:
 		Status write_callback (const FLAC__byte buffer[], size_t bytes, unsigned samples, unsigned current_frame) {
-			buffers.push_back(Nan::CopyBuffer((const char*) buffer, bytes));
+			printf(" ++ %zu bytes\n", bytes);
+			for (size_t i = 0; i < bytes; i++) {
+				buffers.push(buffer[i]);
+			}
 			return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
 		}
 	};
@@ -67,6 +164,7 @@ namespace nodeflac {
 
 		// Prototype
 		NODE_SET_PROTOTYPE_METHOD(tpl, "process", Process);
+		NODE_SET_PROTOTYPE_METHOD(tpl, "finish",  Finish);
 
 		constructor.Reset(isolate, tpl->GetFunction());
 		exports->Set(String::NewFromUtf8(isolate, "FlacEncodeStream"), tpl->GetFunction());
@@ -88,10 +186,19 @@ namespace nodeflac {
 		}
 	}
 
+	void FlacEncodeStream::Finish(const FunctionCallbackInfo<Value>& args) {
+		Nan::HandleScope scope;
+
+		/* get "this" */
+		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
+
+		self->finish();
+		self->ReturnBuffers(args);
+	}
+
 	void FlacEncodeStream::Process(const FunctionCallbackInfo<Value>& args) {
 		/* process a buffer and return a buffer (sync) */
 		Nan::HandleScope scope;
-		Isolate* isolate = args.GetIsolate();
 
 		/* get "this" */
 		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
@@ -106,23 +213,32 @@ namespace nodeflac {
 		}
 		
 		/* submit buffers for processing */
+		printf("... Submit!\n");
 		self->process(pointers, smallestLen / self->sampleSize);
+		printf("... After submit!\n");
 
-		/* collect results */
-		Local<Array> rv = Array::New(isolate, self->buffers.size());
+		self->ReturnBuffers(args);
+	}
 
-		int index = 0;
-		for (MaybeLocal<Object>& buf : self->buffers) {
-			rv->Set(index++, buf.ToLocalChecked());
+	void FlacEncodeStream::ReturnBuffers(const FunctionCallbackInfo<Value>& args) {
+		size_t        sz  = buffers.size();
+		Local<Object> buf = Nan::NewBuffer(sz).ToLocalChecked();
+		uint8_t*      dta = (uint8_t*) Buffer::Data(buf);
+
+		printf(" -- %zu bytes\n", sz);
+
+		while (!buffers.empty()) {
+			*(dta++) = buffers.front();
+			buffers.pop();
 		}
 
-		self->buffers.clear();
-		args.GetReturnValue().Set(rv);
+		// self->buffers.clear();
+		args.GetReturnValue().Set(buf);
 	}
 
 	static void Initialize(Handle<Object> target) {
         Nan::HandleScope scope;
-        
+
         FlacEncodeStream::Init(target);
     }
 }
