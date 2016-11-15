@@ -120,7 +120,7 @@ namespace nodeflac {
 		unsigned int  numChannels, sampleSize;
 		bool          is_signed;
 		BufferList    buffers;
-		FLAC__int32   samples[256 * 1024];
+		FLAC__int32   samples[1024 * 1024];
 
 		static Persistent<Object> constructor;
 
@@ -237,28 +237,28 @@ namespace nodeflac {
 	}
 
 	inline FLAC__int32 FlacEncodeStream::Advance(uint8_t*& ptr) {
-		if (sampleSize == 1) {
-			int8_t* p = (int8_t*) ptr;
-			ptr++;
-			return *p;
-		} else if (sampleSize == 2) {
-			int16_t* p = (int16_t*) ptr;
-			ptr+=2;
-			return *p;
-		} else if (sampleSize == 3) {
-			// Is this a negative?  Then we need to sign extend. 
-	        if (ptr[2] & 0x80 ) {
-				FLAC__int32 rv = (0xff << 24) | (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0);
-				ptr += 3;
-				return rv;
-			} else {
-				FLAC__int32 rv = (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0);
-				ptr += 3;
-				return rv;
-			}
-
-		}
-		return 0;
+		if (sampleSize == 1) { 
+	      int8_t* p = (int8_t*) ptr; 
+	      ptr++; 
+	      return *p; 
+	    } else if (sampleSize == 2) { 
+	      int16_t* p = (int16_t*) ptr; 
+	      ptr+=2; 
+	      return *p; 
+	    } else if (sampleSize == 3) { 
+	      // Is this a negative?  Then we need to sign extend.  
+	          if (ptr[2] & 0x80 ) { 
+	        FLAC__int32 rv = (0xff << 24) | (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0); 
+	        ptr += 3; 
+	        return rv; 
+	      } else { 
+	        FLAC__int32 rv = (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0); 
+	        ptr += 3; 
+	        return rv; 
+	      } 
+	 
+	    } 
+	    return 0; 
 	}
 
 	void FlacEncodeStream::ProcessInterl(const FunctionCallbackInfo<Value>& args) {
@@ -271,7 +271,6 @@ namespace nodeflac {
 		uint8_t* source   = (uint8_t*) Buffer::Data(args[0]);
 		size_t   len      = Buffer::Length(args[0]);
 		size_t   nsamples = len / (self->sampleSize * self->numChannels);
-
 
 		size_t idx = 0;
 		for (size_t i = 0; i < nsamples; i++) {
