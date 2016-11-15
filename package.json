@@ -25,5 +25,9 @@
   "dependencies": {
     "bindings": "^1.2.1",
     "nan": "^2.4.0"
+  },
+  "devDependencies": {
+    "node-wav": "^0.0.2",
+    "wav": "^1.0.1"
   }
 }

@@ -114,29 +114,30 @@ namespace nodeflac {
 	class FlacEncodeStream : public Nan::ObjectWrap, public Encoder::Stream {
 	public:
 		typedef ::FLAC__StreamEncoderWriteStatus Status;
-		typedef ringbuffer<uint8_t, 16 * 1024>   BufferList;
+		typedef ringbuffer<uint8_t, 1024 * 1024> BufferList;
 
 	private:
-		unsigned int numChannels, sampleSize;
-		BufferList   buffers;
+		unsigned int  numChannels, sampleSize;
+		bool          is_signed;
+		BufferList    buffers;
+		FLAC__int32   samples[256 * 1024];
 
 		static Persistent<Object> constructor;
 
 	public:
-		FlacEncodeStream(bool _streaming, unsigned int _numChannels, unsigned int _depth, unsigned int _rate)
-			: numChannels(_numChannels), sampleSize(_depth / 8)
+		FlacEncodeStream(bool _streaming, unsigned int _numChannels, unsigned int _depth, bool _is_signed, unsigned int _rate)
+			: numChannels(_numChannels), sampleSize(_depth / 8), is_signed(_is_signed)
 		{
 			set_streamable_subset (_streaming);
 			set_sample_rate       (_rate);
 			set_bits_per_sample   (_depth);
 			set_channels          (_numChannels);
 			set_blocksize         (_streaming ? 128 : 0);
-
-			#if 0
-			printf("FlacEncodeStream: streaming: %s, numChannels: %u, depth: %u, rate: %u\n",
-				_streaming ? "true" : "false", _numChannels, _depth, _rate);
-			#endif
-			
+#if 0
+			printf("FlacEncodeStream: streaming: %s, numChannels: %u, depth: %u, rate: %u, signed: %s\n",
+				_streaming ? "true" : "false", _numChannels, _depth, _rate,
+				_is_signed ? "true" : "false");
+#endif
 			init();
 		}
 
@@ -145,9 +146,12 @@ namespace nodeflac {
 		static void New           (const FunctionCallbackInfo<Value>& args);
 		static void Process       (const FunctionCallbackInfo<Value>& args);
 		static void ProcessInterl (const FunctionCallbackInfo<Value>& args);
+		static void ProcessSeries (const FunctionCallbackInfo<Value>& args);
 		static void Finish        (const FunctionCallbackInfo<Value>& args);
 			   void ReturnBuffers (const FunctionCallbackInfo<Value>& args);
 	protected:
+		FLAC__int32 Advance(uint8_t*&);
+
 		Status write_callback (const FLAC__byte buffer[], size_t bytes, unsigned samples, unsigned current_frame) {
 			// printf(" ++ %zu bytes\n", bytes);
 			for (size_t i = 0; i < bytes; i++) {
@@ -168,6 +172,7 @@ namespace nodeflac {
 		// Prototype
 		NODE_SET_PROTOTYPE_METHOD(tpl, "process",            Process);
 		NODE_SET_PROTOTYPE_METHOD(tpl, "processInterleaved", ProcessInterl);
+		NODE_SET_PROTOTYPE_METHOD(tpl, "processSeries",      ProcessSeries);
 		NODE_SET_PROTOTYPE_METHOD(tpl, "finish",             Finish);
 
 		constructor.Reset(isolate, tpl->GetFunction());
@@ -180,11 +185,12 @@ namespace nodeflac {
 
 			// Invoked as constructor: `new FlacEncodeStream(...)`
 			bool         streaming   = GetOr(cfg, "streaming",   false);
-			unsigned int numChannels = GetOr(cfg, "numChannels", 2);
-			unsigned int depth       = GetOr(cfg, "depth",       16);
-			unsigned int rate        = GetOr(cfg, "rate",        44100);
+			bool         is_signed   = GetOr(cfg, "signed",      false);
+			unsigned int numChannels = GetOr(cfg, "channels",    2);
+			unsigned int depth       = GetOr(cfg, "bitDepth",    16);
+			unsigned int rate        = GetOr(cfg, "sampleRate",  44100);
 
-			FlacEncodeStream* obj = new FlacEncodeStream(streaming, numChannels, depth, rate);
+			FlacEncodeStream* obj = new FlacEncodeStream(streaming, numChannels, depth, is_signed, rate);
 			obj->Wrap(args.This());
 			args.GetReturnValue().Set(args.This());
 		}
@@ -200,6 +206,61 @@ namespace nodeflac {
 		self->ReturnBuffers(args);
 	}
 
+	void FlacEncodeStream::ProcessSeries(const FunctionCallbackInfo<Value>& args) {
+		/* process a buffer and return a buffer (sync) */
+		Nan::HandleScope scope;
+
+		/* get "this" */
+		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
+
+		uint8_t* source   = (uint8_t*) Buffer::Data(args[0]);
+		size_t   len      = Buffer::Length(args[0]);
+		size_t   nsamples = len / (self->sampleSize * self->numChannels);
+
+		FLAC__int32* pointers[64];
+
+		size_t idx = 0;
+		for (unsigned int i = 0; i < self->numChannels; i++) {
+			pointers[i] = &self->samples[idx];
+
+			for (unsigned int j = 0; j < nsamples; j++) {
+				self->samples[idx++] = self->Advance(source);
+			}
+		}
+
+		/* submit buffers for processing */
+		// printf("... Submit!\n");
+		self->process(pointers, nsamples);
+		// printf("... After submit!\n");
+
+		self->ReturnBuffers(args);
+	}
+
+	inline FLAC__int32 FlacEncodeStream::Advance(uint8_t*& ptr) {
+		if (sampleSize == 1) {
+			int8_t* p = (int8_t*) ptr;
+			ptr++;
+			return *p;
+		} else if (sampleSize == 2) {
+			int16_t* p = (int16_t*) ptr;
+			ptr+=2;
+			return *p;
+		} else if (sampleSize == 3) {
+			// Is this a negative?  Then we need to sign extend. 
+	        if (ptr[2] & 0x80 ) {
+				FLAC__int32 rv = (0xff << 24) | (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0);
+				ptr += 3;
+				return rv;
+			} else {
+				FLAC__int32 rv = (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0);
+				ptr += 3;
+				return rv;
+			}
+
+		}
+		return 0;
+	}
+
 	void FlacEncodeStream::ProcessInterl(const FunctionCallbackInfo<Value>& args) {
 		/* process a buffer and return a buffer (sync) */
 		Nan::HandleScope scope;
@@ -207,12 +268,21 @@ namespace nodeflac {
 		/* get "this" */
 		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
 
-		FLAC__int32* source = (FLAC__int32*) Buffer::Data(args[0]);
-		size_t       len    = Buffer::Length(args[0]);
+		uint8_t* source   = (uint8_t*) Buffer::Data(args[0]);
+		size_t   len      = Buffer::Length(args[0]);
+		size_t   nsamples = len / (self->sampleSize * self->numChannels);
+
+
+		size_t idx = 0;
+		for (size_t i = 0; i < nsamples; i++) {
+			for (size_t j = 0; j < self->numChannels; j++) {
+				self->samples[idx++] = self->Advance(source);
+			}
+		}
 		
 		/* submit buffers for processing */
 		// printf("... Submit!\n");
-		self->process_interleaved(source, len / (self->sampleSize * self->numChannels));
+		self->process_interleaved(self->samples, nsamples);
 		// printf("... After submit!\n");
 
 		self->ReturnBuffers(args);
@@ -249,7 +319,7 @@ namespace nodeflac {
 
 		// printf(" -- %zu bytes\n", sz);
 
-		while (!buffers.empty()) {
+		for (size_t i = 0; i < sz; i++) {
 			*(dta++) = buffers.front();
 			buffers.pop();
 		}
