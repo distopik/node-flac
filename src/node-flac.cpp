@@ -247,7 +247,7 @@ namespace nodeflac {
 	      return *p; 
 	    } else if (sampleSize == 3) { 
 	      // Is this a negative?  Then we need to sign extend.  
-	          if (ptr[2] & 0x80 ) { 
+          if (ptr[2] & 0x80 ) { 
 	        FLAC__int32 rv = (0xff << 24) | (ptr[2] << 16) | (ptr[1] << 8) | (ptr[0] << 0); 
 	        ptr += 3; 
 	        return rv; 
