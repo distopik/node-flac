@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <math.h>
 
 #include <FLAC++/decoder.h>
 #include <FLAC++/encoder.h>
@@ -147,6 +148,7 @@ namespace nodeflac {
 		static void Process       (const FunctionCallbackInfo<Value>& args);
 		static void ProcessInterl (const FunctionCallbackInfo<Value>& args);
 		static void ProcessSeries (const FunctionCallbackInfo<Value>& args);
+		static void ProcessFloats (const FunctionCallbackInfo<Value>& args);
 		static void Finish        (const FunctionCallbackInfo<Value>& args);
 			   void ReturnBuffers (const FunctionCallbackInfo<Value>& args);
 	protected:
@@ -172,6 +174,7 @@ namespace nodeflac {
 		// Prototype
 		NODE_SET_PROTOTYPE_METHOD(tpl, "process",            Process);
 		NODE_SET_PROTOTYPE_METHOD(tpl, "processInterleaved", ProcessInterl);
+		NODE_SET_PROTOTYPE_METHOD(tpl, "processFloats",      ProcessFloats);
 		NODE_SET_PROTOTYPE_METHOD(tpl, "processSeries",      ProcessSeries);
 		NODE_SET_PROTOTYPE_METHOD(tpl, "finish",             Finish);
 
@@ -301,6 +304,47 @@ namespace nodeflac {
 		for (unsigned int i = 0; i < self->numChannels; i++) {
 			pointers[i] = (FLAC__int32*) Buffer::Data(array->Get(i));
 			smallestLen = std::min(smallestLen, Buffer::Length(array->Get(i)));
+		}
+		
+		/* submit buffers for processing */
+		// printf("... Submit!\n");
+		self->process(pointers, smallestLen / self->sampleSize);
+		// printf("... After submit!\n");
+
+		self->ReturnBuffers(args);
+	}
+
+	static FLAC__int32 from_float(float val, FLAC__int32 smin, FLAC__int32 smax) {
+		val *= smax;
+		if (val > smax)
+			return smax;
+		if (val < smin)
+			return smin;
+
+		return (FLAC__int32) round(val);
+	}
+
+	void FlacEncodeStream::ProcessFloats(const FunctionCallbackInfo<Value>& args) {
+		/* process a buffer and return a buffer (sync) */
+		Nan::HandleScope scope;
+
+		/* get "this" */
+		FlacEncodeStream* self = ObjectWrap::Unwrap<FlacEncodeStream>(args.Holder());
+
+		FLAC__int32* pointers[64];
+		FLAC__int32  smp_max = (1 << (self->sampleSize*8-1))-1, smp_min = -smp_max;
+		Local<Array> array = args[0].As<Array>();
+
+		size_t smallestLen = ~0;
+		for (unsigned int i = 0; i < self->numChannels; i++) {
+			pointers[i] = (FLAC__int32*) Buffer::Data(array->Get(i));
+			smallestLen = std::min(smallestLen, Buffer::Length(array->Get(i)));
+		}
+
+		for (size_t i = 0; i < self->numChannels; i++) {
+			for (size_t j = 0; j < smallestLen; j++) {
+				pointers[i][j] = from_float(((float**)pointers)[i][j], smp_min, smp_max);
+			}
 		}
 		
 		/* submit buffers for processing */
