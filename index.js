@@ -43,5 +43,6 @@ const stream = require('stream'),
 }
 
 module.exports = {
-	FlacEncoder	
+	FlacEncoder,
+	flac
 }
