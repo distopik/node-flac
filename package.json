@@ -1,6 +1,6 @@
 {
   "name": "node-flac",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Native libFLAC bindings for Node",
   "main": "index.js",
   "scripts": {
