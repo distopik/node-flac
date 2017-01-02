@@ -341,6 +341,8 @@ namespace nodeflac {
 			smallestLen = std::min(smallestLen, Buffer::Length(array->Get(i)));
 		}
 
+		smallestLen /= 4;
+
 		for (size_t i = 0; i < self->numChannels; i++) {
 			for (size_t j = 0; j < smallestLen; j++) {
 				pointers[i][j] = from_float(((float**)pointers)[i][j], smp_min, smp_max);
@@ -349,7 +351,7 @@ namespace nodeflac {
 		
 		/* submit buffers for processing */
 		// printf("... Submit!\n");
-		self->process(pointers, smallestLen / self->sampleSize);
+		self->process(pointers, smallestLen);
 		// printf("... After submit!\n");
 
 		self->ReturnBuffers(args);
